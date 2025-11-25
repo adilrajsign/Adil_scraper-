@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive } from 'lucide-react';
-import { SearchResult, ScrapeStatus } from './types';
+import React, { useState, useRef, useEffect } from 'react';
+import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive, Trash2, Cpu } from 'lucide-react';
+import { SearchResult, ScrapeStatus, ScrapedEmail } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
 import LeadTable from './components/LeadTable';
@@ -11,12 +11,18 @@ const App: React.FC = () => {
   const [status, setStatus] = useState<ScrapeStatus>(ScrapeStatus.IDLE);
   const [data, setData] = useState<SearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [totalCollected, setTotalCollected] = useState(0);
   
   // Auto-Scrape States
   const [isAutoScraping, setIsAutoScraping] = useState(false);
   const [autoQueryDisplay, setAutoQueryDisplay] = useState('');
   const [isRecordingToDisk, setIsRecordingToDisk] = useState(false);
   const stopSignal = useRef(false);
+
+  // Memory Management Refs
+  const seenEmailsRef = useRef<Set<string>>(new Set());
+  const allEmailsRef = useRef<ScrapedEmail[]>([]); // Stores ALL data for auto-save if disk stream fails
+  const MAX_UI_ROWS = 100; // Only keep the last 100 rows in DOM to prevent browser crash
 
   // Configuration
   const [useSuperThreads, setUseSuperThreads] = useState(false);
@@ -48,6 +54,14 @@ const App: React.FC = () => {
     setProviderFilters(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
+  const clearData = () => {
+    setData(null);
+    setTotalCollected(0);
+    seenEmailsRef.current.clear();
+    allEmailsRef.current = [];
+    setStatus(ScrapeStatus.IDLE);
+  };
+
   // Manual Search
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,13 +69,25 @@ const App: React.FC = () => {
 
     setStatus(ScrapeStatus.SEARCHING);
     setError(null);
+    // For manual search, we reset to show fresh results
     setData(null);
+    seenEmailsRef.current.clear(); 
+    allEmailsRef.current = [];
+    setTotalCollected(0);
 
     const activeDomains = getActiveDomains();
 
     try {
       const result = await searchEmailsWithGemini(query, activeDomains);
+      
+      // Update Ref for manual search
+      result.emails.forEach(e => {
+          seenEmailsRef.current.add(e.email.toLowerCase());
+          allEmailsRef.current.push(e);
+      });
+      
       setData(result);
+      setTotalCollected(result.emails.length);
       setStatus(ScrapeStatus.COMPLETED);
     } catch (err: any) {
       console.error(err);
@@ -74,62 +100,54 @@ const App: React.FC = () => {
   const startAutoScrape = async () => {
     if (isAutoScraping) return;
 
-    let fileStream: any = null;
+    let fileHandle: any = null;
+    let usingDisk = false;
     
-    // 1. Enforce Folder Selection logic
+    // 1. Try to initialize Real-Time Disk Saving (Seamless)
     if ('showDirectoryPicker' in window) {
-        // Explicitly tell user to select folder first
-        const userConfirmed = window.confirm("Step 1: Select a folder on your computer.\nStep 2: The app will auto-save the CSV file there.\n\nClick OK to select the folder.");
-        
-        if (!userConfirmed) return; // User cancelled the initial prompt
-
         try {
+            // Direct call - no confirmation dialog
             const dirHandle = await (window as any).showDirectoryPicker();
             const fileName = `zabasearch_leads_${Date.now()}.csv`;
-            const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
-            fileStream = await fileHandle.createWritable();
+            fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
             
-            // Write CSV Header
-            await fileStream.write("Email Address,Person/Context,Source\n");
+            // INITIAL WRITE: Create file and write header
+            // We use 'createWritable' to overwrite initially
+            const writable = await fileHandle.createWritable();
+            await writable.write("Email Address,Person/Context,Source\n");
+            await writable.close(); // Commit header immediately
+            
             setIsRecordingToDisk(true);
+            usingDisk = true;
         } catch (err) {
-            // Check if user cancelled the browser picker
             if ((err as Error).name === 'AbortError') {
-                console.log("Folder selection cancelled by user.");
-                return; // Stop execution here. Do NOT start mining.
+                console.log("Folder selection cancelled. Falling back to Memory Mode.");
+                // User cancelled. We will proceed in Memory Mode.
+            } else {
+                console.error("File system error", err);
+                alert("Error accessing file system. Running in Memory Mode.");
             }
-            
-            console.error("File system error", err);
-            alert("Could not access the selected folder. Auto-mine cancelled.");
-            return;
         }
-    } else {
-        // Fallback for unsupported browsers
-        const proceed = window.confirm("Your browser does not support direct folder saving. Data will be collected in memory and must be downloaded manually.\n\nContinue?");
-        if (!proceed) return;
     }
     
-    // 2. Start Mining (Only reached if folder selection succeeded or unsupported browser accepted)
+    // 2. Start Mining
     setIsAutoScraping(true);
     stopSignal.current = false;
     setStatus(ScrapeStatus.SEARCHING);
     
-    // Initialize data if empty
     if (!data) {
       setData({ emails: [], sources: [], rawText: '' });
     }
 
     const activeDomains = getActiveDomains();
 
-    // Loop until stopped
     while (!stopSignal.current) {
-      // 1. Generate Batch of Identities
+      // 1. Generate Batch
       const queries = Array.from({ length: BATCH_SIZE }, () => generateRandomUSAIdentity());
       setAutoQueryDisplay(queries.join(' | '));
       
       try {
         // 2. Execute Requests in Parallel
-        // Since this is local, it resolves almost instantly
         const promises = queries.map(q => 
             searchEmailsWithGemini(q, activeDomains)
                 .then(res => ({ status: 'fulfilled', value: res }))
@@ -138,124 +156,159 @@ const App: React.FC = () => {
 
         const results = await Promise.all(promises);
         
-        // 3. Batch Update State with Successful Results
+        // 3. Process Results
         const validResults = results
             .filter((r: any) => r.status === 'fulfilled')
             .map((r: any) => r.value as SearchResult);
 
-        // 3a. Write to Disk (Real-time)
-        if (fileStream && validResults.length > 0) {
-            const newEmails = validResults.flatMap(r => r.emails);
-            if (newEmails.length > 0) {
-              const csvChunk = newEmails.map(item => 
+        // Filter out duplicates globally using the Ref (Memory Optimized)
+        const uniqueNewEmails: ScrapedEmail[] = [];
+        
+        validResults.forEach(res => {
+            res.emails.forEach(emailObj => {
+                const normalized = emailObj.email.toLowerCase().trim();
+                if (!seenEmailsRef.current.has(normalized)) {
+                    seenEmailsRef.current.add(normalized);
+                    uniqueNewEmails.push(emailObj);
+                    
+                    // Always store in full history for Auto-Save fallback
+                    allEmailsRef.current.push(emailObj);
+                }
+            });
+        });
+
+        // 3a. Write UNIQUE items to Disk (Real-Time & Crash Proof)
+        // STRATEGY: Open -> Seek -> Append -> Close
+        // This ensures data is flushed to disk immediately after each batch.
+        if (usingDisk && fileHandle && uniqueNewEmails.length > 0) {
+              const csvChunk = uniqueNewEmails.map(item => 
                 `"${item.email}","${item.context}","${item.source}"`
               ).join('\n') + '\n';
               
-              await fileStream.write(csvChunk);
-            }
+              try {
+                  // Get current file info to find end position
+                  const file = await fileHandle.getFile();
+                  const currentSize = file.size;
+                  
+                  // Open writable in 'keepExistingData' mode
+                  const writable = await fileHandle.createWritable({ keepExistingData: true });
+                  
+                  // Seek to end of file
+                  await writable.seek(currentSize);
+                  
+                  // Append new data
+                  await writable.write(csvChunk);
+                  
+                  // Close immediately to flush data to disk
+                  await writable.close();
+              } catch (writeErr) {
+                  console.error("Critical Disk Write Error:", writeErr);
+                  setIsRecordingToDisk(false);
+                  usingDisk = false;
+                  alert("Disk write failed! Switching to RAM mode. Data will auto-download on stop.");
+              }
         }
 
-        setData((prev) => {
-          if (validResults.length === 0) return prev;
-
-          // Clone existing state
-          let currentEmails = prev ? [...prev.emails] : [];
-          let currentSources = prev ? [...prev.sources] : [];
-          
-          validResults.forEach(res => {
-            // Enhanced Deduplication & Enrichment Logic
-            res.emails.forEach(newEmail => {
-              const normalizedNewEmail = newEmail.email.toLowerCase().trim();
+        // 3b. Update UI State with Rolling Buffer
+        if (uniqueNewEmails.length > 0) {
+            setTotalCollected(prev => prev + uniqueNewEmails.length);
+            
+            setData((prev) => {
+              // Get current list or empty
+              let currentEmails = prev ? [...prev.emails] : [];
               
-              const existingIndex = currentEmails.findIndex(
-                (existing) => existing.email.toLowerCase().trim() === normalizedNewEmail
-              );
-
-              if (existingIndex !== -1) {
-                // DUPLICATE FOUND: Check if we should enrich the existing record
-                const existing = currentEmails[existingIndex];
-                
-                // Logic: Update if new context is "better" (longer/more specific) or if existing was generic
-                const isExistingGeneric = existing.context === 'Unknown Person';
-                const isNewGeneric = newEmail.context === 'Unknown Person';
-                
-                const shouldUpdate = !isNewGeneric && (
-                  isExistingGeneric || 
-                  newEmail.context.length > existing.context.length
-                );
-
-                if (shouldUpdate) {
-                  currentEmails[existingIndex] = {
-                    ...existing,
-                    context: newEmail.context,
-                    source: newEmail.source // Update source as it likely provided the better context
-                  };
-                }
-              } else {
-                // UNIQUE: Add new email
-                currentEmails.push(newEmail);
+              // Append new unique emails
+              currentEmails = [...currentEmails, ...uniqueNewEmails];
+              
+              // MEMORY PROTECTION: Trim to last MAX_UI_ROWS
+              // This is the key fix for "browser not responding"
+              if (currentEmails.length > MAX_UI_ROWS) {
+                  currentEmails = currentEmails.slice(-MAX_UI_ROWS);
               }
-            });
 
-            // Deduplicate Sources
-            res.sources.forEach(src => {
-              if (!currentSources.some(s => s.uri === src.uri)) {
-                currentSources.push(src);
+              // Update sources (keep small sample)
+              let currentSources = prev ? [...prev.sources] : [];
+              if (validResults[0]?.sources) {
+                  currentSources = [...validResults[0].sources, ...currentSources].slice(0, 20);
               }
-            });
-          });
 
-          return {
-            emails: currentEmails,
-            sources: currentSources,
-            rawText: prev ? prev.rawText : '' 
-          };
-        });
+              return {
+                emails: currentEmails,
+                sources: currentSources,
+                rawText: prev ? prev.rawText : '' 
+              };
+            });
+        }
 
       } catch (err) {
         console.warn("Batch execution fatal error, pausing...", err);
       }
 
-      // 4. Minimal Delay to allow React UI Render Cycle
-      // No API rate limit to respect, just need to keep UI responsive.
+      // 4. Minimal Delay
       if (!stopSignal.current) {
         await new Promise(resolve => setTimeout(resolve, 50)); 
       }
     }
 
-    // Cleanup File Stream
-    if (fileStream) {
-      await fileStream.close();
-      setIsRecordingToDisk(false);
+    // Cleanup
+    if (!usingDisk) {
+        // AUTO-SAVE FALLBACK:
+        // If we were NOT recording to disk real-time, auto-download now.
+        if (allEmailsRef.current.length > 0) {
+            triggerAutoDownload(allEmailsRef.current);
+        }
     }
-
+    
+    // We don't need to "close" fileHandle here because we closed it after every write.
+    setIsRecordingToDisk(false);
     setIsAutoScraping(false);
     setStatus(ScrapeStatus.COMPLETED);
     setAutoQueryDisplay('');
   };
 
-  const stopAutoScrape = () => {
-    stopSignal.current = true;
-    setIsAutoScraping(false);
-    setStatus(ScrapeStatus.IDLE);
+  const triggerAutoDownload = (emails: ScrapedEmail[]) => {
+      const headers = ['Email Address', 'Person/Context', 'Source'];
+      const csvContent = [
+        headers.join(','),
+        ...emails.map(item => 
+          `"${item.email}","${item.context}","${item.source}"`
+        )
+      ].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `zabasearch_autosave_${Date.now()}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
   };
 
+  const stopAutoScrape = () => {
+    stopSignal.current = true;
+    // status and recording state are updated in the async loop cleanup
+  };
+
+  // Manual export logic
   const exportCSV = async () => {
-    if (!data?.emails.length) return;
+    // Prefer the Full History ref if available, otherwise UI data
+    const sourceData = allEmailsRef.current.length > 0 ? allEmailsRef.current : data?.emails;
     
+    if (!sourceData || sourceData.length === 0) return;
+
     const headers = ['Email Address', 'Person/Context', 'Source'];
     const csvContent = [
       headers.join(','),
-      ...data.emails.map(item => 
+      ...sourceData.map(item => 
         `"${item.email}","${item.context}","${item.source}"`
       )
     ].join('\n');
 
     try {
-      // 1. Try Modern "Save As" Picker (Chrome/Edge/Opera)
       if ('showSaveFilePicker' in window) {
         const handle = await (window as any).showSaveFilePicker({
-          suggestedName: `zabasearch_leads_${Date.now()}.csv`,
+          suggestedName: `zabasearch_export_${Date.now()}.csv`,
           types: [{
             description: 'CSV File',
             accept: {'text/csv': ['.csv']},
@@ -265,18 +318,16 @@ const App: React.FC = () => {
         await writable.write(csvContent);
         await writable.close();
       } else {
-        // 2. Fallback for Firefox/Safari/Mobile
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', `zabasearch_leads_${Date.now()}.csv`);
+        link.setAttribute('download', `zabasearch_export_${Date.now()}.csv`);
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
       }
     } catch (err) {
-      // User cancelled save dialog
       console.log("Save cancelled");
     }
   };
@@ -296,11 +347,18 @@ const App: React.FC = () => {
             </h1>
           </div>
           <div className="flex items-center gap-4 text-xs text-gray-500 font-mono">
-             {isRecordingToDisk && (
+             {isRecordingToDisk ? (
                <div className="flex items-center gap-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-red-400 animate-pulse">
                  <div className="w-2 h-2 rounded-full bg-red-500"></div>
-                 REC to DISK
+                 REC to DISK (CRASH PROOF)
                </div>
+             ) : (
+                isAutoScraping && (
+                    <div className="flex items-center gap-2 px-2 py-1 bg-yellow-900/30 border border-yellow-800 rounded text-yellow-400">
+                        <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
+                        RAM MODE (Auto-Save on Stop)
+                    </div>
+                )
              )}
              {isAutoScraping && (
                 <div className="flex items-center gap-2 text-green-400 animate-pulse font-bold">
@@ -308,10 +366,10 @@ const App: React.FC = () => {
                   TURBO MINER: {BATCH_SIZE}X THREADS
                 </div>
              )}
-            <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-900/20 border border-blue-800 text-blue-400">
-               <Search className="w-3 h-3 text-blue-500" />
-               People Search Mode
-            </div>
+             <div className="flex items-center gap-2 text-indigo-400 bg-indigo-900/20 px-2 py-1 rounded border border-indigo-800/50">
+                <Cpu className="w-3 h-3" />
+                RAM Optimized
+             </div>
           </div>
         </div>
       </header>
@@ -377,7 +435,7 @@ const App: React.FC = () => {
                          Start Auto-Mine
                       </button>
                       <div className="text-[10px] text-center text-gray-500 font-mono">
-                        *Select Folder First
+                        *Auto-Saves to Disk
                       </div>
                     </div>
                   )}
@@ -463,31 +521,48 @@ const App: React.FC = () => {
         {/* Results Area */}
         <section className="space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-white flex items-center gap-2">
-              <span className="text-primary-500">///</span> 
-              Identified Targets
-              {data?.emails && (
-                <span className="ml-2 text-sm font-normal text-gray-500 bg-gray-800 px-2 py-0.5 rounded-full">
-                  {data.emails.length} Found
-                </span>
-              )}
-            </h2>
+            <div className="flex items-center gap-4">
+                <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <span className="text-primary-500">///</span> 
+                Live Feed
+                {totalCollected > 0 && (
+                    <span className="ml-2 text-sm font-normal text-white bg-green-600 px-3 py-0.5 rounded-full shadow shadow-green-900/50">
+                    Total Collected: {totalCollected.toLocaleString()}
+                    </span>
+                )}
+                </h2>
+                {totalCollected > MAX_UI_ROWS && (
+                    <span className="text-xs text-gray-500 italic">
+                        (Displaying last {MAX_UI_ROWS} items to save memory)
+                    </span>
+                )}
+            </div>
             
-            {data && data.emails.length > 0 && (
-              <button
-                onClick={exportCSV}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg transition-colors text-sm font-medium"
-              >
-                <HardDrive className="w-4 h-4" />
-                Save to Computer
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+                {data && (data.emails.length > 0 || allEmailsRef.current.length > 0) && (
+                <>
+                    <button
+                        onClick={clearData}
+                        className="flex items-center gap-2 px-3 py-2 bg-red-900/20 hover:bg-red-900/40 border border-red-900/50 text-red-400 rounded-lg transition-colors text-sm"
+                        title="Clear Memory & UI"
+                    >
+                        <Trash2 className="w-4 h-4" />
+                        Clear
+                    </button>
+                    <button
+                        onClick={exportCSV}
+                        className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg transition-colors text-sm font-medium"
+                    >
+                        <HardDrive className="w-4 h-4" />
+                        Save Full Export
+                    </button>
+                </>
+                )}
+            </div>
           </div>
 
           <LeadTable emails={data?.emails || []} />
           
-          {data?.sources && <SourcesPanel sources={data.sources} />}
-
           {/* Prompt Transparency / Status */}
           {status === ScrapeStatus.SEARCHING && (
             <div className="mt-8 p-4 font-mono text-xs text-green-500 bg-black rounded border border-gray-800 opacity-70">
@@ -496,10 +571,12 @@ const App: React.FC = () => {
                    &gt; THREAD_POOL: {BATCH_SIZE} active workers<br/>
                    &gt; FILTERS: {getActiveDomains().length} provider groups active<br/>
                    &gt; BATCH_TARGETS: {autoQueryDisplay}<br/>
-                   {isRecordingToDisk && (
-                      <span className="text-red-400">&gt; FILE_STREAM: WRITING TO DISK [Active]<br/></span>
+                   {isRecordingToDisk ? (
+                      <span className="text-red-400 font-bold">&gt; FILE_STREAM: CRASH-PROOF MODE (Appending to disk every batch)<br/></span>
+                   ) : (
+                      <span className="text-yellow-400">&gt; FILE_STREAM: DISK OFF (Ram Mode) - Will auto-download on stop<br/></span>
                    )}
-                   &gt; EXTRACTING: ZabaSearch / Whitepages / Radaris...<br/>
+                   &gt; MEMORY: Rolling buffer active (100 rows). Old data flushed from DOM.<br/>
                    &gt; STATUS: High-Speed Mining...
                  </>
               ) : (
@@ -511,13 +588,6 @@ const App: React.FC = () => {
                 </>
               )}
             </div>
-          )}
-          
-          {data && data.emails.length === 0 && status === ScrapeStatus.COMPLETED && !isAutoScraping && (
-             <div className="mt-2 text-xs text-gray-500 text-center">
-                No direct email matches found on ZabaSearch or public records for this query. 
-                Try varying the location or name format.
-             </div>
           )}
         </section>
 
