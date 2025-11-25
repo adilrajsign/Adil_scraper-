@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle } from 'lucide-react';
+import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check } from 'lucide-react';
 import { SearchResult, ScrapeStatus } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
@@ -18,8 +18,9 @@ const App: React.FC = () => {
   const stopSignal = useRef(false);
 
   // Configuration
-  // Local Generation allows high concurrency
-  const BATCH_SIZE = 50; 
+  const [useSuperThreads, setUseSuperThreads] = useState(false);
+  // Dynamic Batch Size: 50 (Standard) vs 100 (Super Speed)
+  const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
   // Manual Search
   const handleSearch = async (e: React.FormEvent) => {
@@ -267,11 +268,31 @@ const App: React.FC = () => {
                   )}
                 </div>
                 
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between text-xs text-gray-500 gap-2">
-                  <p className="flex items-center gap-1">
-                    <ShieldCheck className="w-3 h-3" />
-                    {isAutoScraping ? `Parallel Processing (${BATCH_SIZE} Threads) - Unlimited Bandwidth` : "Sources: ZabaSearch, Whitepages & Public Indexes"}
-                  </p>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between text-xs text-gray-500 gap-4 sm:gap-2">
+                  <div className="flex flex-col gap-2">
+                    <p className="flex items-center gap-1">
+                      <ShieldCheck className="w-3 h-3" />
+                      {isAutoScraping ? `Parallel Processing (${BATCH_SIZE} Threads) - Unlimited Bandwidth` : "Sources: ZabaSearch, Whitepages & Public Indexes"}
+                    </p>
+                    
+                    {/* 100 THREADS CHECKBOX */}
+                    <label className="flex items-center gap-2 cursor-pointer select-none group w-fit">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all duration-200 ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}>
+                            {useSuperThreads && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                        </div>
+                        <input 
+                            type="checkbox" 
+                            className="hidden" 
+                            checked={useSuperThreads} 
+                            onChange={e => setUseSuperThreads(e.target.checked)} 
+                            disabled={isAutoScraping}
+                        />
+                        <span className={`font-bold transition-colors ${useSuperThreads ? 'text-red-400 animate-pulse' : 'text-gray-500 group-hover:text-gray-400'}`}>
+                            ENABLE 100 THREADS (SUPER SPEED)
+                        </span>
+                    </label>
+                  </div>
+
                   <p className="flex items-center gap-1 text-primary-400">
                      <span className="w-1.5 h-1.5 rounded-full bg-primary-500"></span>
                      Filters: Gmail, Yahoo, AOL, Hotmail, iCloud, .net (Full Unmasked)
