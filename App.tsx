@@ -326,17 +326,17 @@ const App: React.FC = () => {
             <div className="mt-8 p-4 font-mono text-xs text-green-500 bg-black rounded border border-gray-800 opacity-70">
               {isAutoScraping ? (
                  <>
-                   > THREAD_POOL: {BATCH_SIZE} active workers<br/>
-                   > BATCH_TARGETS: {autoQueryDisplay}<br/>
-                   > EXTRACTING: ZabaSearch / Whitepages / Radaris...<br/>
-                   > STATUS: High-Speed Mining...
+                   &gt; THREAD_POOL: {BATCH_SIZE} active workers<br/>
+                   &gt; BATCH_TARGETS: {autoQueryDisplay}<br/>
+                   &gt; EXTRACTING: ZabaSearch / Whitepages / Radaris...<br/>
+                   &gt; STATUS: High-Speed Mining...
                  </>
               ) : (
                 <>
-                  > Accessing ZabaSearch Index...<br/>
-                  > Querying Public Records Database...<br/>
-                  > Filtering for contact information...<br/>
-                  > Cross-referencing data points...<br/>
+                  &gt; Accessing ZabaSearch Index...<br/>
+                  &gt; Querying Public Records Database...<br/>
+                  &gt; Filtering for contact information...<br/>
+                  &gt; Cross-referencing data points...<br/>
                 </>
               )}
             </div>
