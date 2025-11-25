@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter } from 'lucide-react';
+import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive } from 'lucide-react';
 import { SearchResult, ScrapeStatus } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
@@ -15,6 +15,7 @@ const App: React.FC = () => {
   // Auto-Scrape States
   const [isAutoScraping, setIsAutoScraping] = useState(false);
   const [autoQueryDisplay, setAutoQueryDisplay] = useState('');
+  const [isRecordingToDisk, setIsRecordingToDisk] = useState(false);
   const stopSignal = useRef(false);
 
   // Configuration
@@ -69,10 +70,46 @@ const App: React.FC = () => {
     }
   };
 
-  // Auto-Scrape Logic (High Speed Local Generation)
+  // Auto-Scrape Logic (High Speed Local Generation + File System Stream)
   const startAutoScrape = async () => {
     if (isAutoScraping) return;
+
+    let fileStream: any = null;
     
+    // 1. Enforce Folder Selection logic
+    if ('showDirectoryPicker' in window) {
+        // Explicitly tell user to select folder first
+        const userConfirmed = window.confirm("Step 1: Select a folder on your computer.\nStep 2: The app will auto-save the CSV file there.\n\nClick OK to select the folder.");
+        
+        if (!userConfirmed) return; // User cancelled the initial prompt
+
+        try {
+            const dirHandle = await (window as any).showDirectoryPicker();
+            const fileName = `zabasearch_leads_${Date.now()}.csv`;
+            const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+            fileStream = await fileHandle.createWritable();
+            
+            // Write CSV Header
+            await fileStream.write("Email Address,Person/Context,Source\n");
+            setIsRecordingToDisk(true);
+        } catch (err) {
+            // Check if user cancelled the browser picker
+            if ((err as Error).name === 'AbortError') {
+                console.log("Folder selection cancelled by user.");
+                return; // Stop execution here. Do NOT start mining.
+            }
+            
+            console.error("File system error", err);
+            alert("Could not access the selected folder. Auto-mine cancelled.");
+            return;
+        }
+    } else {
+        // Fallback for unsupported browsers
+        const proceed = window.confirm("Your browser does not support direct folder saving. Data will be collected in memory and must be downloaded manually.\n\nContinue?");
+        if (!proceed) return;
+    }
+    
+    // 2. Start Mining (Only reached if folder selection succeeded or unsupported browser accepted)
     setIsAutoScraping(true);
     stopSignal.current = false;
     setStatus(ScrapeStatus.SEARCHING);
@@ -105,6 +142,18 @@ const App: React.FC = () => {
         const validResults = results
             .filter((r: any) => r.status === 'fulfilled')
             .map((r: any) => r.value as SearchResult);
+
+        // 3a. Write to Disk (Real-time)
+        if (fileStream && validResults.length > 0) {
+            const newEmails = validResults.flatMap(r => r.emails);
+            if (newEmails.length > 0) {
+              const csvChunk = newEmails.map(item => 
+                `"${item.email}","${item.context}","${item.source}"`
+              ).join('\n') + '\n';
+              
+              await fileStream.write(csvChunk);
+            }
+        }
 
         setData((prev) => {
           if (validResults.length === 0) return prev;
@@ -174,6 +223,12 @@ const App: React.FC = () => {
       }
     }
 
+    // Cleanup File Stream
+    if (fileStream) {
+      await fileStream.close();
+      setIsRecordingToDisk(false);
+    }
+
     setIsAutoScraping(false);
     setStatus(ScrapeStatus.COMPLETED);
     setAutoQueryDisplay('');
@@ -185,7 +240,7 @@ const App: React.FC = () => {
     setStatus(ScrapeStatus.IDLE);
   };
 
-  const exportCSV = () => {
+  const exportCSV = async () => {
     if (!data?.emails.length) return;
     
     const headers = ['Email Address', 'Person/Context', 'Source'];
@@ -196,14 +251,34 @@ const App: React.FC = () => {
       )
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `zabasearch_emails_export_${Date.now()}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      // 1. Try Modern "Save As" Picker (Chrome/Edge/Opera)
+      if ('showSaveFilePicker' in window) {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: `zabasearch_leads_${Date.now()}.csv`,
+          types: [{
+            description: 'CSV File',
+            accept: {'text/csv': ['.csv']},
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(csvContent);
+        await writable.close();
+      } else {
+        // 2. Fallback for Firefox/Safari/Mobile
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', `zabasearch_leads_${Date.now()}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    } catch (err) {
+      // User cancelled save dialog
+      console.log("Save cancelled");
+    }
   };
 
   return (
@@ -221,6 +296,12 @@ const App: React.FC = () => {
             </h1>
           </div>
           <div className="flex items-center gap-4 text-xs text-gray-500 font-mono">
+             {isRecordingToDisk && (
+               <div className="flex items-center gap-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-red-400 animate-pulse">
+                 <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                 REC to DISK
+               </div>
+             )}
              {isAutoScraping && (
                 <div className="flex items-center gap-2 text-green-400 animate-pulse font-bold">
                   <Gauge className="w-4 h-4 text-green-500" />
@@ -285,15 +366,20 @@ const App: React.FC = () => {
                       Stop Miner
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={startAutoScrape}
-                      disabled={status === ScrapeStatus.SEARCHING}
-                      className="px-8 py-4 bg-primary-600 hover:bg-primary-500 text-white font-semibold rounded-lg shadow-lg shadow-primary-900/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[180px]"
-                    >
-                       <Zap className="w-5 h-5 fill-current" />
-                       Start Auto-Mine
-                    </button>
+                    <div className="flex flex-col gap-1">
+                      <button
+                        type="button"
+                        onClick={startAutoScrape}
+                        disabled={status === ScrapeStatus.SEARCHING}
+                        className="px-8 py-4 bg-primary-600 hover:bg-primary-500 text-white font-semibold rounded-lg shadow-lg shadow-primary-900/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[180px]"
+                      >
+                         <Zap className="w-5 h-5 fill-current" />
+                         Start Auto-Mine
+                      </button>
+                      <div className="text-[10px] text-center text-gray-500 font-mono">
+                        *Select Folder First
+                      </div>
+                    </div>
                   )}
                 </div>
                 
@@ -341,7 +427,8 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-4 border-l border-gray-700 pl-4">
                     {/* 100 THREADS CHECKBOX */}
                     <label className="flex items-center gap-2 cursor-pointer select-none group w-fit">
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all duration-200 ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}>
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all duration-200 ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}
+                        >
                             {useSuperThreads && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                         </div>
                         <input 
@@ -391,8 +478,8 @@ const App: React.FC = () => {
                 onClick={exportCSV}
                 className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg transition-colors text-sm font-medium"
               >
-                <Download className="w-4 h-4" />
-                Export CSV
+                <HardDrive className="w-4 h-4" />
+                Save to Computer
               </button>
             )}
           </div>
@@ -409,6 +496,9 @@ const App: React.FC = () => {
                    &gt; THREAD_POOL: {BATCH_SIZE} active workers<br/>
                    &gt; FILTERS: {getActiveDomains().length} provider groups active<br/>
                    &gt; BATCH_TARGETS: {autoQueryDisplay}<br/>
+                   {isRecordingToDisk && (
+                      <span className="text-red-400">&gt; FILE_STREAM: WRITING TO DISK [Active]<br/></span>
+                   )}
                    &gt; EXTRACTING: ZabaSearch / Whitepages / Radaris...<br/>
                    &gt; STATUS: High-Speed Mining...
                  </>
