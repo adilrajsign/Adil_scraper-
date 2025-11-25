@@ -1,0 +1,5 @@
+{
+  "name": "ZabaSearch Email OSINT",
+  "description": "A people-finder tool utilizing ZabaSearch and Google Search Grounding to extract personal email addresses and contact points.",
+  "requestFramePermissions": []
+}
