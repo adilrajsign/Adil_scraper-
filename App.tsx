@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check } from 'lucide-react';
+import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter } from 'lucide-react';
 import { SearchResult, ScrapeStatus } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
@@ -22,6 +22,31 @@ const App: React.FC = () => {
   // Dynamic Batch Size: 50 (Standard) vs 100 (Super Speed)
   const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
+  // Provider Filters
+  const [providerFilters, setProviderFilters] = useState({
+    gmail: true,
+    yahoo: true,
+    aol: true,
+    hotmail: true,
+    icloud: true,
+    net: true
+  });
+
+  const getActiveDomains = () => {
+    const domains: string[] = [];
+    if (providerFilters.gmail) domains.push('gmail.com');
+    if (providerFilters.yahoo) domains.push('yahoo.com', 'ymail.com');
+    if (providerFilters.aol) domains.push('aol.com');
+    if (providerFilters.hotmail) domains.push('hotmail.com', 'live.com', 'msn.com', 'outlook.com');
+    if (providerFilters.icloud) domains.push('icloud.com', 'me.com', 'mac.com');
+    if (providerFilters.net) domains.push('comcast.net', 'att.net', 'verizon.net', 'cox.net', 'sbcglobal.net');
+    return domains;
+  };
+
+  const toggleFilter = (key: keyof typeof providerFilters) => {
+    setProviderFilters(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
   // Manual Search
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,8 +56,10 @@ const App: React.FC = () => {
     setError(null);
     setData(null);
 
+    const activeDomains = getActiveDomains();
+
     try {
-      const result = await searchEmailsWithGemini(query);
+      const result = await searchEmailsWithGemini(query, activeDomains);
       setData(result);
       setStatus(ScrapeStatus.COMPLETED);
     } catch (err: any) {
@@ -55,6 +82,8 @@ const App: React.FC = () => {
       setData({ emails: [], sources: [], rawText: '' });
     }
 
+    const activeDomains = getActiveDomains();
+
     // Loop until stopped
     while (!stopSignal.current) {
       // 1. Generate Batch of Identities
@@ -65,7 +94,7 @@ const App: React.FC = () => {
         // 2. Execute Requests in Parallel
         // Since this is local, it resolves almost instantly
         const promises = queries.map(q => 
-            searchEmailsWithGemini(q)
+            searchEmailsWithGemini(q, activeDomains)
                 .then(res => ({ status: 'fulfilled', value: res }))
                 .catch(err => ({ status: 'rejected', reason: err }))
         );
@@ -268,13 +297,48 @@ const App: React.FC = () => {
                   )}
                 </div>
                 
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between text-xs text-gray-500 gap-4 sm:gap-2">
-                  <div className="flex flex-col gap-2">
-                    <p className="flex items-center gap-1">
-                      <ShieldCheck className="w-3 h-3" />
-                      {isAutoScraping ? `Parallel Processing (${BATCH_SIZE} Threads) - Unlimited Bandwidth` : "Sources: ZabaSearch, Whitepages & Public Indexes"}
-                    </p>
+                {/* Advanced Controls Row */}
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between text-xs text-gray-400 gap-4 pt-2">
+                  
+                  {/* Provider Checkboxes */}
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex items-center gap-2 text-primary-400 font-semibold">
+                      <Filter className="w-3.5 h-3.5" />
+                      FILTERS:
+                    </div>
                     
+                    {[
+                      { key: 'gmail', label: 'Gmail' },
+                      { key: 'yahoo', label: 'Yahoo' },
+                      { key: 'aol', label: 'AOL' },
+                      { key: 'hotmail', label: 'Hotmail/Outlook' },
+                      { key: 'icloud', label: 'iCloud' },
+                      { key: 'net', label: '.net ISPs' },
+                    ].map((provider) => (
+                      <label key={provider.key} className="flex items-center gap-1.5 cursor-pointer group select-none">
+                        <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center
+                          ${providerFilters[provider.key as keyof typeof providerFilters] 
+                            ? 'bg-primary-600 border-primary-600' 
+                            : 'bg-gray-800 border-gray-600 group-hover:border-gray-500'}`}
+                        >
+                          {providerFilters[provider.key as keyof typeof providerFilters] && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}
+                        </div>
+                        <input 
+                          type="checkbox" 
+                          className="hidden" 
+                          checked={providerFilters[provider.key as keyof typeof providerFilters]}
+                          onChange={() => toggleFilter(provider.key as keyof typeof providerFilters)}
+                          disabled={isAutoScraping}
+                        />
+                        <span className={`${providerFilters[provider.key as keyof typeof providerFilters] ? 'text-gray-200' : 'text-gray-500'} transition-colors`}>
+                          {provider.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+
+                  {/* Settings */}
+                  <div className="flex items-center gap-4 border-l border-gray-700 pl-4">
                     {/* 100 THREADS CHECKBOX */}
                     <label className="flex items-center gap-2 cursor-pointer select-none group w-fit">
                         <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all duration-200 ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}>
@@ -288,15 +352,10 @@ const App: React.FC = () => {
                             disabled={isAutoScraping}
                         />
                         <span className={`font-bold transition-colors ${useSuperThreads ? 'text-red-400 animate-pulse' : 'text-gray-500 group-hover:text-gray-400'}`}>
-                            ENABLE 100 THREADS (SUPER SPEED)
+                            100x SUPER SPEED
                         </span>
                     </label>
                   </div>
-
-                  <p className="flex items-center gap-1 text-primary-400">
-                     <span className="w-1.5 h-1.5 rounded-full bg-primary-500"></span>
-                     Filters: Gmail, Yahoo, AOL, Hotmail, iCloud, .net (Full Unmasked)
-                  </p>
                 </div>
               </form>
             </div>
@@ -348,6 +407,7 @@ const App: React.FC = () => {
               {isAutoScraping ? (
                  <>
                    &gt; THREAD_POOL: {BATCH_SIZE} active workers<br/>
+                   &gt; FILTERS: {getActiveDomains().length} provider groups active<br/>
                    &gt; BATCH_TARGETS: {autoQueryDisplay}<br/>
                    &gt; EXTRACTING: ZabaSearch / Whitepages / Radaris...<br/>
                    &gt; STATUS: High-Speed Mining...
