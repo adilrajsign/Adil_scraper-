@@ -1,14 +1,24 @@
-
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive, Trash2, Cpu, ChevronDown, ChevronUp, CheckSquare, Square as SquareIcon } from 'lucide-react';
+import { 
+  Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, 
+  Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, 
+  HardDrive, Trash2, Cpu, ChevronDown, ChevronUp, CheckSquare, 
+  Square as SquareIcon, Database, LogOut, User as UserIcon
+} from 'lucide-react';
 import { SearchResult, ScrapeStatus, ScrapedEmail } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
 import { isValidEmail } from './services/validation';
+import { supabase } from './services/supabaseClient';
 import LeadTable from './components/LeadTable';
-import SourcesPanel from './components/SourcesPanel';
+import { Auth } from './components/Auth';
+import { Session } from '@supabase/supabase-js';
 
 const App: React.FC = () => {
+  const [session, setSession] = useState<Session | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
+  // Scraper State
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<ScrapeStatus>(ScrapeStatus.IDLE);
   const [data, setData] = useState<SearchResult | null>(null);
@@ -29,28 +39,26 @@ const App: React.FC = () => {
   const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
   const [providerFilters, setProviderFilters] = useState<Record<string, boolean>>({
-    'gmail.com': true,
-    'yahoo.com': true,
-    'aol.com': true,
-    'hotmail.com': true,
-    'icloud.com': true,
-    'att.net': true,
-    'comcast.net': true,
-    'verizon.net': true,
-    'cox.net': true,
-    'sbcglobal.net': true,
-    'bellsouth.net': true,
-    'charter.net': true,
-    'spectrum.net': true,
-    'optimum.net': true,
-    'earthlink.net': true,
-    'frontiernet.net': true,
-    'centurylink.net': true,
-    'windstream.net': true,
-    'suddenlink.net': true,
-    'mediacomcc.net': true,
-    'pacbell.net': true,
+    'gmail.com': true, 'yahoo.com': true, 'aol.com': true, 'hotmail.com': true, 
+    'icloud.com': true, 'att.net': true, 'comcast.net': true, 'verizon.net': true, 
+    'cox.net': true, 'sbcglobal.net': true, 'bellsouth.net': true, 'charter.net': true, 
+    'spectrum.net': true, 'optimum.net': true, 'earthlink.net': true, 'frontiernet.net': true, 
+    'centurylink.net': true, 'windstream.net': true, 'suddenlink.net': true, 
+    'mediacomcc.net': true, 'pacbell.net': true,
   });
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setIsAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const majorProviders = ['gmail.com', 'yahoo.com', 'aol.com', 'hotmail.com', 'icloud.com'];
   const ispProviders = Object.keys(providerFilters).filter(p => !majorProviders.includes(p));
@@ -100,15 +108,13 @@ const App: React.FC = () => {
 
     try {
       const result = await searchEmailsWithGemini(query, activeDomains);
-      
-      // Client-side validation pass
       const validatedEmails = result.emails.filter(e => isValidEmail(e.email));
       
       validatedEmails.forEach(e => {
           seenEmailsRef.current.add(e.email.toLowerCase());
           allEmailsRef.current.push(e);
       });
-      
+
       setData({ ...result, emails: validatedEmails });
       setTotalCollected(validatedEmails.length);
       setStatus(ScrapeStatus.COMPLETED);
@@ -117,6 +123,10 @@ const App: React.FC = () => {
       setError(err.message || "An error occurred while fetching data.");
       setStatus(ScrapeStatus.ERROR);
     }
+  };
+
+  const stopAutoScrape = () => {
+    stopSignal.current = true;
   };
 
   const startAutoScrape = async () => {
@@ -130,19 +140,14 @@ const App: React.FC = () => {
             const dirHandle = await (window as any).showDirectoryPicker();
             const fileName = `leads_${Date.now()}.csv`;
             fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
-            
             const writable = await fileHandle.createWritable();
             await writable.write("Email Address,Person/Context,Source\n");
             await writable.close();
-            
             setIsRecordingToDisk(true);
             usingDisk = true;
             allEmailsRef.current = []; 
         } catch (err) {
-            if ((err as Error).name !== 'AbortError') {
-                console.error("File system error", err);
-                alert("Error accessing file system. Running in Memory Mode.");
-            }
+            console.error("File system error", err);
         }
     }
     
@@ -173,65 +178,49 @@ const App: React.FC = () => {
         validResults.forEach(res => {
             res.emails.forEach(emailObj => {
                 const normalized = emailObj.email.toLowerCase().trim();
-                
-                // FINAL CLIENT-SIDE VALIDATION CHECK
                 if (!seenEmailsRef.current.has(normalized) && isValidEmail(normalized)) {
                     seenEmailsRef.current.add(normalized);
                     const finalObj = { ...emailObj, isValidated: true };
                     uniqueNewEmails.push(finalObj);
-                    
-                    if (!usingDisk) {
-                      allEmailsRef.current.push(finalObj);
-                    }
+                    if (!usingDisk) allEmailsRef.current.push(finalObj);
                 }
             });
         });
 
-        if (usingDisk && fileHandle && uniqueNewEmails.length > 0) {
-              const csvChunk = uniqueNewEmails.map(item => 
-                `"${item.email}","${item.context}","${item.source}"`
-              ).join('\n') + '\n';
-              
-              try {
-                  const file = await fileHandle.getFile();
-                  const currentSize = file.size;
-                  const writable = await fileHandle.createWritable({ keepExistingData: true });
-                  await writable.seek(currentSize);
-                  await writable.write(csvChunk);
-                  await writable.close();
-              } catch (writeErr) {
-                  console.error("Disk Write Error:", writeErr);
-                  setIsRecordingToDisk(false);
-                  usingDisk = false;
-              }
-        }
-
         if (uniqueNewEmails.length > 0) {
             setTotalCollected(prev => prev + uniqueNewEmails.length);
+
+            if (usingDisk && fileHandle) {
+                  const csvChunk = uniqueNewEmails.map(item => `"${item.email}","${item.context}","${item.source}"`).join('\n') + '\n';
+                  try {
+                      const file = await fileHandle.getFile();
+                      const currentSize = file.size;
+                      const writable = await fileHandle.createWritable({ keepExistingData: true });
+                      await writable.seek(currentSize);
+                      await writable.write(csvChunk);
+                      await writable.close();
+                  } catch (writeErr) {
+                      setIsRecordingToDisk(false);
+                      usingDisk = false;
+                  }
+            }
+
             setData((prev) => {
               let currentEmails = prev ? [...prev.emails] : [];
               currentEmails = [...currentEmails, ...uniqueNewEmails];
-              if (currentEmails.length > MAX_UI_ROWS) {
-                  currentEmails = currentEmails.slice(-MAX_UI_ROWS);
-              }
+              if (currentEmails.length > MAX_UI_ROWS) currentEmails = currentEmails.slice(-MAX_UI_ROWS);
               let currentSources = prev ? [...prev.sources] : [];
-              if (validResults[0]?.sources) {
-                  currentSources = [...validResults[0].sources, ...currentSources].slice(0, 20);
-              }
+              if (validResults[0]?.sources) currentSources = [...validResults[0].sources, ...currentSources].slice(0, 20);
               return { emails: currentEmails, sources: currentSources, rawText: prev ? prev.rawText : '' };
             });
         }
       } catch (err) {
         console.warn("Batch error", err);
       }
-
       if (!stopSignal.current) await new Promise(resolve => setTimeout(resolve, 50)); 
     }
 
-    if (!usingDisk && allEmailsRef.current.length > 0) {
-        triggerAutoDownload(allEmailsRef.current);
-    }
-    
+    if (!usingDisk && allEmailsRef.current.length > 0) triggerAutoDownload(allEmailsRef.current);
     setIsRecordingToDisk(false);
     setIsAutoScraping(false);
     setStatus(ScrapeStatus.COMPLETED);
@@ -240,10 +229,7 @@ const App: React.FC = () => {
 
   const triggerAutoDownload = (emails: ScrapedEmail[]) => {
       const headers = ['Email Address', 'Person/Context', 'Source'];
-      const csvContent = [
-        headers.join(','),
-        ...emails.map(item => `"${item.email}","${item.context}","${item.source}"`)
-      ].join('\n');
+      const csvContent = [headers.join(','), ...emails.map(item => `"${item.email}","${item.context}","${item.source}"`)].join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -254,7 +240,9 @@ const App: React.FC = () => {
       document.body.removeChild(link);
   };
 
-  const stopAutoScrape = () => { stopSignal.current = true; };
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
 
   const exportCSV = async () => {
     const sourceData = allEmailsRef.current.length > 0 ? allEmailsRef.current : data?.emails;
@@ -276,6 +264,18 @@ const App: React.FC = () => {
     } catch (err) { console.log("Save cancelled"); }
   };
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-[#0f172a] flex items-center justify-center">
+        <Loader2 className="w-10 h-10 text-primary-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <Auth />;
+  }
+
   return (
     <div className="min-h-screen bg-[#0f172a] text-gray-200 font-sans selection:bg-primary-500/30">
       
@@ -289,30 +289,37 @@ const App: React.FC = () => {
               Raj Scrapper <span className="text-primary-500">PRO</span>
             </h1>
           </div>
-          <div className="flex items-center gap-4 text-xs text-gray-500 font-mono">
-             {isRecordingToDisk ? (
-               <div className="flex items-center gap-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-red-400 animate-pulse">
-                 <HardDrive className="w-3 h-3" />
-                 STREAMING TO DISK (RAM SAFE)
-               </div>
-             ) : (
-                isAutoScraping && (
-                    <div className="flex items-center gap-2 px-2 py-1 bg-yellow-900/30 border border-yellow-800 rounded text-yellow-400">
-                        <Cpu className="w-3 h-3 animate-pulse" />
-                        RAM MODE (CACHING ACTIVE)
-                    </div>
-                )
-             )}
-             <div className="hidden sm:flex items-center gap-2 text-indigo-400 bg-indigo-900/20 px-2 py-1 rounded border border-indigo-800/50">
-                <ShieldCheck className="w-3 h-3" />
-                Anti-Freeze Protection
-             </div>
+          
+          <div className="flex items-center gap-6">
+            <div className="hidden md:flex items-center gap-4 text-xs text-gray-500 font-mono">
+               {isRecordingToDisk && (
+                 <div className="flex items-center gap-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-red-400 animate-pulse">
+                   <HardDrive className="w-3 h-3" />
+                   STREAMING
+                 </div>
+               )}
+            </div>
+
+            <div className="h-8 w-[1px] bg-gray-800 hidden md:block"></div>
+
+            <div className="flex items-center gap-4">
+              <div className="flex flex-col items-end text-right hidden sm:block">
+                <span className="text-xs font-bold text-white truncate max-w-[150px]">{session.user.email}</span>
+                <span className="text-[10px] text-primary-500 font-bold uppercase tracking-tighter">Pro Operator</span>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-900/10 rounded-lg transition-all border border-transparent hover:border-red-900/30"
+                title="Logout"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
+            </div>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
         <section className="mb-8">
           <div className="relative group">
             <div className={`absolute -inset-0.5 bg-gradient-to-r from-primary-600 to-indigo-600 rounded-xl blur transition duration-1000 ${isAutoScraping ? 'opacity-70 animate-pulse' : 'opacity-30 group-hover:opacity-50'}`}></div>
@@ -327,11 +334,7 @@ const App: React.FC = () => {
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       disabled={isAutoScraping}
-                      placeholder={
-                           isAutoScraping 
-                                ? `Mining ${BATCH_SIZE} threads: ${autoQueryDisplay.substring(0, 40)}...` 
-                                : "Name & Location (e.g. 'Adil Smith Florida')"
-                      }
+                      placeholder={isAutoScraping ? `Mining ${BATCH_SIZE} threads: ${autoQueryDisplay.substring(0, 40)}...` : "Name & Location (e.g. 'Adil Smith Florida')"}
                       className="w-full pl-12 pr-4 py-4 bg-gray-950 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all font-mono text-sm disabled:opacity-50"
                     />
                   </div>
@@ -343,7 +346,7 @@ const App: React.FC = () => {
                       className="px-6 py-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-lg transition-all flex items-center justify-center gap-2"
                     >
                         <UserSearch className="w-5 h-5" />
-                        Manual Find
+                        Find
                     </button>
                   ) : (
                     <button
@@ -352,7 +355,7 @@ const App: React.FC = () => {
                       className="px-8 py-4 bg-red-600 hover:bg-red-500 text-white font-semibold rounded-lg shadow-lg shadow-red-900/50 transition-all flex items-center justify-center gap-2 min-w-[180px]"
                     >
                       <Square className="w-5 h-5 fill-current" />
-                      Stop Miner
+                      Stop
                     </button>
                   )}
 
@@ -364,7 +367,7 @@ const App: React.FC = () => {
                         className="px-8 py-4 bg-primary-600 hover:bg-primary-500 text-white font-semibold rounded-lg shadow-lg shadow-primary-900/50 transition-all flex items-center justify-center gap-2 min-w-[180px]"
                     >
                          <Zap className="w-5 h-5 fill-current" />
-                         Start Auto-Mine
+                         Auto-Mine
                     </button>
                   )}
                 </div>
@@ -373,7 +376,7 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2 text-primary-400 font-bold text-xs uppercase tracking-widest">
                       <Filter className="w-3.5 h-3.5" />
-                      Individual Collection Options
+                      Collection Options
                     </div>
                     <button 
                       type="button"
@@ -381,55 +384,27 @@ const App: React.FC = () => {
                       className="text-xs text-gray-500 hover:text-white flex items-center gap-1 transition-colors"
                     >
                       {showAllFilters ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                      {showAllFilters ? 'Hide Extended ISPs' : `Show Extended ISPs (${ispProviders.length})`}
+                      {showAllFilters ? 'Hide ISPs' : `Show Extended ISPs (${ispProviders.length})`}
                     </button>
                   </div>
 
                   <div className="space-y-4 bg-gray-950/50 p-4 rounded-lg border border-gray-800/50">
                     <div className="flex items-center gap-6 flex-wrap">
-                      <div className="flex items-center gap-2 mr-2">
-                        <button 
-                            type="button"
-                            onClick={() => toggleGroup(majorProviders, true)}
-                            className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
-                        >ALL</button>
-                        <button 
-                            type="button"
-                            onClick={() => toggleGroup(majorProviders, false)}
-                            className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
-                        >NONE</button>
-                      </div>
                       {majorProviders.map((p) => (
                         <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
                       ))}
                     </div>
-
                     {showAllFilters && (
-                      <div className="pt-3 border-t border-gray-800/50">
-                        <div className="flex items-center gap-2 mb-3">
-                            <span className="text-[10px] text-gray-500 font-bold mr-2 uppercase">ISP Group:</span>
-                            <button 
-                                type="button"
-                                onClick={() => toggleGroup(ispProviders, true)}
-                                className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
-                            >ENABLE ALL ISPs</button>
-                            <button 
-                                type="button"
-                                onClick={() => toggleGroup(ispProviders, false)}
-                                className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
-                            >DISABLE ALL ISPs</button>
-                        </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
-                          {ispProviders.map((p) => (
-                            <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
-                          ))}
-                        </div>
+                      <div className="pt-3 border-t border-gray-800/50 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
+                        {ispProviders.map((p) => (
+                          <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
+                        ))}
                       </div>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-6 pt-2 border-t border-gray-800/30">
+                <div className="flex flex-wrap items-center gap-6 pt-2 border-t border-gray-800/30">
                     <label className="flex items-center gap-2 cursor-pointer select-none group">
                         <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}
                         >
@@ -437,7 +412,7 @@ const App: React.FC = () => {
                         </div>
                         <input type="checkbox" className="hidden" checked={useSuperThreads} onChange={e => setUseSuperThreads(e.target.checked)} disabled={isAutoScraping} />
                         <span className={`text-xs font-bold transition-colors ${useSuperThreads ? 'text-red-400 animate-pulse' : 'text-gray-500 group-hover:text-gray-400'}`}>
-                            100X SUPER THREADING (HIGH CPU)
+                            100X THREADING
                         </span>
                     </label>
                 </div>
@@ -450,7 +425,7 @@ const App: React.FC = () => {
           <div className="mb-8 p-4 bg-red-900/20 border border-red-900/50 rounded-lg text-red-200 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
             <div>
-              <h3 className="font-semibold text-red-400">Error Encountered</h3>
+              <h3 className="font-semibold text-red-400">System Error</h3>
               <p className="text-sm opacity-80 mt-1">{error}</p>
             </div>
           </div>
@@ -460,8 +435,7 @@ const App: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                  <span className="text-primary-500">///</span> 
-                  Mining Results
+                  <span className="text-primary-500">///</span> Results
                 </h2>
                 {totalCollected > 0 && (
                     <div className="flex items-center gap-2 bg-gray-900 border border-gray-800 rounded-full pl-1 pr-3 py-1 shadow-inner">
@@ -479,14 +453,14 @@ const App: React.FC = () => {
                         className="flex items-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-lg transition-colors text-xs"
                     >
                         <Trash2 className="w-3.5 h-3.5" />
-                        Reset Memory
+                        Clear
                     </button>
                     <button
                         onClick={exportCSV}
                         className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg shadow-lg shadow-primary-900/50 transition-colors text-sm font-bold"
                     >
                         <Download className="w-4 h-4" />
-                        Full Export
+                        Export
                     </button>
                 </>
                 )}
@@ -503,20 +477,13 @@ const App: React.FC = () => {
               </div>
               <div className="space-y-0.5 opacity-80">
                 &gt; THREAD_POOL: {BATCH_SIZE} Active<br/>
-                &gt; ACTIVE_FILTERS: {getActiveDomains().length} Domains<br/>
-                {isRecordingToDisk ? (
-                  <span className="text-red-400 font-bold">&gt; STORAGE: ATOMIC DISK WRITE (RAM SAFE MODE)<br/></span>
-                ) : (
-                  <span className="text-yellow-400 font-bold">&gt; STORAGE: RAM CACHE MODE (Auto-Download on Stop)<br/></span>
-                )}
-                &gt; UI_BUFFER: Last {MAX_UI_ROWS} rows visible<br/>
-                &gt; BATCH_FEED: {autoQueryDisplay.substring(0, 100)}...<br/>
+                &gt; USER_ID: {session.user.id.substring(0, 10)}...<br/>
+                {isRecordingToDisk ? <span className="text-red-400 font-bold">&gt; STORAGE: ATOMIC DISK WRITE<br/></span> : <span className="text-yellow-400 font-bold">&gt; STORAGE: RAM CACHE<br/></span>}
                 &gt; VALIDATION: ACTIVE (RFC 5322)<br/>
               </div>
             </div>
           )}
         </section>
-
       </main>
     </div>
   );
@@ -524,16 +491,16 @@ const App: React.FC = () => {
 
 const FilterItem: React.FC<{ label: string, checked: boolean, onChange: () => void, disabled?: boolean }> = ({ label, checked, onChange, disabled }) => (
   <label className={`flex items-center gap-2 cursor-pointer group select-none ${disabled ? 'opacity-50' : ''}`}>
-    <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center
-      ${checked ? 'bg-primary-600 border-primary-600' : 'bg-gray-950 border-gray-700 group-hover:border-gray-500'}`}
-    >
+    <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center ${checked ? 'bg-primary-600 border-primary-600' : 'bg-gray-950 border-gray-700 group-hover:border-gray-500'}`}>
       {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}
     </div>
     <input type="checkbox" className="hidden" checked={checked} onChange={onChange} disabled={disabled} />
-    <span className={`text-[11px] transition-colors ${checked ? 'text-gray-200' : 'text-gray-500'}`}>
-      {label}
-    </span>
+    <span className={`text-[11px] transition-colors ${checked ? 'text-gray-200' : 'text-gray-500'}`}>{label}</span>
   </label>
+);
+
+const Loader2: React.FC<{ className?: string }> = ({ className }) => (
+  <svg className={className} xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
 );
 
 export default App;
