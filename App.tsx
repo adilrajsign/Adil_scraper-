@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive, Trash2, Cpu } from 'lucide-react';
+import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive, Trash2, Cpu, ChevronDown, ChevronUp, CheckSquare, Square as SquareIcon } from 'lucide-react';
 import { SearchResult, ScrapeStatus, ScrapedEmail } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
@@ -21,37 +21,64 @@ const App: React.FC = () => {
 
   // Memory Management Refs
   const seenEmailsRef = useRef<Set<string>>(new Set());
-  const allEmailsRef = useRef<ScrapedEmail[]>([]); // Stores ALL data for auto-save if disk stream fails
+  // IMPORTANT: We only fill allEmailsRef if NOT saving to disk to prevent RAM bloat
+  const allEmailsRef = useRef<ScrapedEmail[]>([]); 
   const MAX_UI_ROWS = 100; // Only keep the last 100 rows in DOM to prevent browser crash
 
   // Configuration
   const [useSuperThreads, setUseSuperThreads] = useState(false);
-  // Dynamic Batch Size: 50 (Standard) vs 100 (Super Speed)
+  const [showAllFilters, setShowAllFilters] = useState(false);
   const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
-  // Provider Filters
-  const [providerFilters, setProviderFilters] = useState({
-    gmail: true,
-    yahoo: true,
-    aol: true,
-    hotmail: true,
-    icloud: true,
-    net: true
+  // Detailed Provider Filters
+  const [providerFilters, setProviderFilters] = useState<Record<string, boolean>>({
+    'gmail.com': true,
+    'yahoo.com': true,
+    'aol.com': true,
+    'hotmail.com': true,
+    'icloud.com': true,
+    'att.net': true,
+    'comcast.net': true,
+    'verizon.net': true,
+    'cox.net': true,
+    'sbcglobal.net': true,
+    'bellsouth.net': true,
+    'charter.net': true,
+    'spectrum.net': true,
+    'optimum.net': true,
+    'earthlink.net': true,
+    'frontiernet.net': true,
+    'centurylink.net': true,
+    'windstream.net': true,
+    'suddenlink.net': true,
+    'mediacomcc.net': true,
+    'pacbell.net': true,
   });
 
+  const majorProviders = ['gmail.com', 'yahoo.com', 'aol.com', 'hotmail.com', 'icloud.com'];
+  const ispProviders = Object.keys(providerFilters).filter(p => !majorProviders.includes(p));
+
   const getActiveDomains = () => {
-    const domains: string[] = [];
-    if (providerFilters.gmail) domains.push('gmail.com');
-    if (providerFilters.yahoo) domains.push('yahoo.com', 'ymail.com');
-    if (providerFilters.aol) domains.push('aol.com');
-    if (providerFilters.hotmail) domains.push('hotmail.com', 'live.com', 'msn.com', 'outlook.com');
-    if (providerFilters.icloud) domains.push('icloud.com', 'me.com', 'mac.com');
-    if (providerFilters.net) domains.push('comcast.net', 'att.net', 'verizon.net', 'cox.net', 'sbcglobal.net');
-    return domains;
+    return Object.entries(providerFilters)
+      .filter(([_, active]) => active)
+      .map(([domain]) => {
+        // Handle aliases
+        if (domain === 'yahoo.com') return ['yahoo.com', 'ymail.com'];
+        if (domain === 'hotmail.com') return ['hotmail.com', 'live.com', 'msn.com', 'outlook.com'];
+        if (domain === 'icloud.com') return ['icloud.com', 'me.com', 'mac.com'];
+        return [domain];
+      })
+      .flat();
   };
 
-  const toggleFilter = (key: keyof typeof providerFilters) => {
-    setProviderFilters(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggleFilter = (domain: string) => {
+    setProviderFilters(prev => ({ ...prev, [domain]: !prev[domain] }));
+  };
+
+  const toggleGroup = (group: string[], targetValue: boolean) => {
+    const next = { ...providerFilters };
+    group.forEach(p => next[p] = targetValue);
+    setProviderFilters(next);
   };
 
   const clearData = () => {
@@ -60,16 +87,18 @@ const App: React.FC = () => {
     seenEmailsRef.current.clear();
     allEmailsRef.current = [];
     setStatus(ScrapeStatus.IDLE);
+    // Explicitly suggest browser memory cleanup to the user if they were in RAM mode
+    if (!isRecordingToDisk && totalCollected > 50000) {
+      console.log("Memory cleared. For hard reset, refresh the page.");
+    }
   };
 
-  // Manual Search
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
 
     setStatus(ScrapeStatus.SEARCHING);
     setError(null);
-    // For manual search, we reset to show fresh results
     setData(null);
     seenEmailsRef.current.clear(); 
     allEmailsRef.current = [];
@@ -79,13 +108,10 @@ const App: React.FC = () => {
 
     try {
       const result = await searchEmailsWithGemini(query, activeDomains);
-      
-      // Update Ref for manual search
       result.emails.forEach(e => {
           seenEmailsRef.current.add(e.email.toLowerCase());
           allEmailsRef.current.push(e);
       });
-      
       setData(result);
       setTotalCollected(result.emails.length);
       setStatus(ScrapeStatus.COMPLETED);
@@ -96,58 +122,46 @@ const App: React.FC = () => {
     }
   };
 
-  // Auto-Scrape Logic (High Speed Local Generation + File System Stream)
   const startAutoScrape = async () => {
     if (isAutoScraping) return;
 
     let fileHandle: any = null;
     let usingDisk = false;
     
-    // 1. Try to initialize Real-Time Disk Saving (Seamless)
     if ('showDirectoryPicker' in window) {
         try {
-            // Direct call - no confirmation dialog
             const dirHandle = await (window as any).showDirectoryPicker();
-            const fileName = `zabasearch_leads_${Date.now()}.csv`;
+            const fileName = `leads_${Date.now()}.csv`;
             fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
             
-            // INITIAL WRITE: Create file and write header
-            // We use 'createWritable' to overwrite initially
             const writable = await fileHandle.createWritable();
             await writable.write("Email Address,Person/Context,Source\n");
-            await writable.close(); // Commit header immediately
+            await writable.close();
             
             setIsRecordingToDisk(true);
             usingDisk = true;
+            // CRITICAL: When using disk, we clear allEmailsRef to keep browser fast and prevent "not responding"
+            allEmailsRef.current = []; 
         } catch (err) {
-            if ((err as Error).name === 'AbortError') {
-                console.log("Folder selection cancelled. Falling back to Memory Mode.");
-                // User cancelled. We will proceed in Memory Mode.
-            } else {
+            if ((err as Error).name !== 'AbortError') {
                 console.error("File system error", err);
                 alert("Error accessing file system. Running in Memory Mode.");
             }
         }
     }
     
-    // 2. Start Mining
     setIsAutoScraping(true);
     stopSignal.current = false;
     setStatus(ScrapeStatus.SEARCHING);
     
-    if (!data) {
-      setData({ emails: [], sources: [], rawText: '' });
-    }
-
+    if (!data) setData({ emails: [], sources: [], rawText: '' });
     const activeDomains = getActiveDomains();
 
     while (!stopSignal.current) {
-      // 1. Generate Batch
       const queries = Array.from({ length: BATCH_SIZE }, () => generateRandomUSAIdentity());
       setAutoQueryDisplay(queries.join(' | '));
       
       try {
-        // 2. Execute Requests in Parallel
         const promises = queries.map(q => 
             searchEmailsWithGemini(q, activeDomains)
                 .then(res => ({ status: 'fulfilled', value: res }))
@@ -155,15 +169,11 @@ const App: React.FC = () => {
         );
 
         const results = await Promise.all(promises);
-        
-        // 3. Process Results
         const validResults = results
             .filter((r: any) => r.status === 'fulfilled')
             .map((r: any) => r.value as SearchResult);
 
-        // Filter out duplicates globally using the Ref (Memory Optimized)
         const uniqueNewEmails: ScrapedEmail[] = [];
-        
         validResults.forEach(res => {
             res.emails.forEach(emailObj => {
                 const normalized = emailObj.email.toLowerCase().trim();
@@ -171,95 +181,61 @@ const App: React.FC = () => {
                     seenEmailsRef.current.add(normalized);
                     uniqueNewEmails.push(emailObj);
                     
-                    // Always store in full history for Auto-Save fallback
-                    allEmailsRef.current.push(emailObj);
+                    // ONLY store in RAM if we are NOT recording to disk
+                    if (!usingDisk) {
+                      allEmailsRef.current.push(emailObj);
+                    }
                 }
             });
         });
 
-        // 3a. Write UNIQUE items to Disk (Real-Time & Crash Proof)
-        // STRATEGY: Open -> Seek -> Append -> Close
-        // This ensures data is flushed to disk immediately after each batch.
+        // 3a. Atomic Write to Disk
         if (usingDisk && fileHandle && uniqueNewEmails.length > 0) {
               const csvChunk = uniqueNewEmails.map(item => 
                 `"${item.email}","${item.context}","${item.source}"`
               ).join('\n') + '\n';
               
               try {
-                  // Get current file info to find end position
                   const file = await fileHandle.getFile();
                   const currentSize = file.size;
-                  
-                  // Open writable in 'keepExistingData' mode
                   const writable = await fileHandle.createWritable({ keepExistingData: true });
-                  
-                  // Seek to end of file
                   await writable.seek(currentSize);
-                  
-                  // Append new data
                   await writable.write(csvChunk);
-                  
-                  // Close immediately to flush data to disk
                   await writable.close();
               } catch (writeErr) {
-                  console.error("Critical Disk Write Error:", writeErr);
+                  console.error("Disk Write Error:", writeErr);
                   setIsRecordingToDisk(false);
                   usingDisk = false;
-                  alert("Disk write failed! Switching to RAM mode. Data will auto-download on stop.");
               }
         }
 
-        // 3b. Update UI State with Rolling Buffer
+        // 3b. UI Update (Rolling Buffer)
         if (uniqueNewEmails.length > 0) {
             setTotalCollected(prev => prev + uniqueNewEmails.length);
-            
             setData((prev) => {
-              // Get current list or empty
               let currentEmails = prev ? [...prev.emails] : [];
-              
-              // Append new unique emails
               currentEmails = [...currentEmails, ...uniqueNewEmails];
-              
-              // MEMORY PROTECTION: Trim to last MAX_UI_ROWS
-              // This is the key fix for "browser not responding"
               if (currentEmails.length > MAX_UI_ROWS) {
                   currentEmails = currentEmails.slice(-MAX_UI_ROWS);
               }
-
-              // Update sources (keep small sample)
               let currentSources = prev ? [...prev.sources] : [];
               if (validResults[0]?.sources) {
                   currentSources = [...validResults[0].sources, ...currentSources].slice(0, 20);
               }
-
-              return {
-                emails: currentEmails,
-                sources: currentSources,
-                rawText: prev ? prev.rawText : '' 
-              };
+              return { emails: currentEmails, sources: currentSources, rawText: prev ? prev.rawText : '' };
             });
         }
-
       } catch (err) {
-        console.warn("Batch execution fatal error, pausing...", err);
+        console.warn("Batch error", err);
       }
 
-      // 4. Minimal Delay
-      if (!stopSignal.current) {
-        await new Promise(resolve => setTimeout(resolve, 50)); 
-      }
+      if (!stopSignal.current) await new Promise(resolve => setTimeout(resolve, 50)); 
     }
 
-    // Cleanup
-    if (!usingDisk) {
-        // AUTO-SAVE FALLBACK:
-        // If we were NOT recording to disk real-time, auto-download now.
-        if (allEmailsRef.current.length > 0) {
-            triggerAutoDownload(allEmailsRef.current);
-        }
+    if (!usingDisk && allEmailsRef.current.length > 0) {
+        triggerAutoDownload(allEmailsRef.current);
     }
     
-    // We don't need to "close" fileHandle here because we closed it after every write.
     setIsRecordingToDisk(false);
     setIsAutoScraping(false);
     setStatus(ScrapeStatus.COMPLETED);
@@ -270,72 +246,43 @@ const App: React.FC = () => {
       const headers = ['Email Address', 'Person/Context', 'Source'];
       const csvContent = [
         headers.join(','),
-        ...emails.map(item => 
-          `"${item.email}","${item.context}","${item.source}"`
-        )
+        ...emails.map(item => `"${item.email}","${item.context}","${item.source}"`)
       ].join('\n');
-
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `zabasearch_autosave_${Date.now()}.csv`);
+      link.setAttribute('download', `leads_autosave_${Date.now()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
   };
 
-  const stopAutoScrape = () => {
-    stopSignal.current = true;
-    // status and recording state are updated in the async loop cleanup
-  };
+  const stopAutoScrape = () => { stopSignal.current = true; };
 
-  // Manual export logic
   const exportCSV = async () => {
-    // Prefer the Full History ref if available, otherwise UI data
     const sourceData = allEmailsRef.current.length > 0 ? allEmailsRef.current : data?.emails;
-    
     if (!sourceData || sourceData.length === 0) return;
-
     const headers = ['Email Address', 'Person/Context', 'Source'];
-    const csvContent = [
-      headers.join(','),
-      ...sourceData.map(item => 
-        `"${item.email}","${item.context}","${item.source}"`
-      )
-    ].join('\n');
-
+    const csvContent = [headers.join(','), ...sourceData.map(item => `"${item.email}","${item.context}","${item.source}"`)].join('\n');
     try {
       if ('showSaveFilePicker' in window) {
         const handle = await (window as any).showSaveFilePicker({
-          suggestedName: `zabasearch_export_${Date.now()}.csv`,
-          types: [{
-            description: 'CSV File',
-            accept: {'text/csv': ['.csv']},
-          }],
+          suggestedName: `leads_export_${Date.now()}.csv`,
+          types: [{ description: 'CSV File', accept: {'text/csv': ['.csv']} }],
         });
         const writable = await handle.createWritable();
         await writable.write(csvContent);
         await writable.close();
       } else {
-        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.setAttribute('download', `zabasearch_export_${Date.now()}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+        triggerAutoDownload(sourceData as ScrapedEmail[]);
       }
-    } catch (err) {
-      console.log("Save cancelled");
-    }
+    } catch (err) { console.log("Save cancelled"); }
   };
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-gray-200 font-sans selection:bg-primary-500/30">
       
-      {/* Header */}
       <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -343,32 +290,26 @@ const App: React.FC = () => {
               <UserSearch className="w-5 h-5" />
             </div>
             <h1 className="text-xl font-bold tracking-tight text-white">
-              ZabaSearch <span className="text-primary-500">OSINT</span>
+              ZabaSearch <span className="text-primary-500">PRO</span>
             </h1>
           </div>
           <div className="flex items-center gap-4 text-xs text-gray-500 font-mono">
              {isRecordingToDisk ? (
                <div className="flex items-center gap-2 px-2 py-1 bg-red-900/30 border border-red-800 rounded text-red-400 animate-pulse">
-                 <div className="w-2 h-2 rounded-full bg-red-500"></div>
-                 REC to DISK (CRASH PROOF)
+                 <HardDrive className="w-3 h-3" />
+                 STREAMING TO DISK (RAM SAFE)
                </div>
              ) : (
                 isAutoScraping && (
                     <div className="flex items-center gap-2 px-2 py-1 bg-yellow-900/30 border border-yellow-800 rounded text-yellow-400">
-                        <div className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></div>
-                        RAM MODE (Auto-Save on Stop)
+                        <Cpu className="w-3 h-3 animate-pulse" />
+                        RAM MODE (CACHING ACTIVE)
                     </div>
                 )
              )}
-             {isAutoScraping && (
-                <div className="flex items-center gap-2 text-green-400 animate-pulse font-bold">
-                  <Gauge className="w-4 h-4 text-green-500" />
-                  TURBO MINER: {BATCH_SIZE}X THREADS
-                </div>
-             )}
-             <div className="flex items-center gap-2 text-indigo-400 bg-indigo-900/20 px-2 py-1 rounded border border-indigo-800/50">
-                <Cpu className="w-3 h-3" />
-                RAM Optimized
+             <div className="hidden sm:flex items-center gap-2 text-indigo-400 bg-indigo-900/20 px-2 py-1 rounded border border-indigo-800/50">
+                <ShieldCheck className="w-3 h-3" />
+                Anti-Freeze Protection
              </div>
           </div>
         </div>
@@ -376,13 +317,11 @@ const App: React.FC = () => {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         
-        {/* Search Section */}
         <section className="mb-8">
           <div className="relative group">
             <div className={`absolute -inset-0.5 bg-gradient-to-r from-primary-600 to-indigo-600 rounded-xl blur transition duration-1000 ${isAutoScraping ? 'opacity-70 animate-pulse' : 'opacity-30 group-hover:opacity-50'}`}></div>
             <div className="relative bg-gray-900 rounded-xl p-6 border border-gray-800 shadow-2xl">
               
-              {/* Manual Search Form */}
               <form onSubmit={handleSearch} className="space-y-4">
                 <div className="flex flex-col md:flex-row gap-4">
                   <div className="flex-1 relative">
@@ -394,27 +333,23 @@ const App: React.FC = () => {
                       disabled={isAutoScraping}
                       placeholder={
                            isAutoScraping 
-                                ? `Mining ${BATCH_SIZE} vectors: ${autoQueryDisplay.substring(0, 50)}...` 
-                                : "Enter Person Name & Location (e.g. 'John Doe California')"
+                                ? `Mining ${BATCH_SIZE} threads: ${autoQueryDisplay.substring(0, 40)}...` 
+                                : "Name & Location (e.g. 'Adil Smith Florida')"
                       }
-                      className="w-full pl-12 pr-4 py-4 bg-gray-950 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all font-mono text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full pl-12 pr-4 py-4 bg-gray-950 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 transition-all font-mono text-sm disabled:opacity-50"
                     />
                   </div>
                   
-                  {/* Manual Button */}
-                  {!isAutoScraping && (
+                  {!isAutoScraping ? (
                     <button
                       type="submit"
                       disabled={status === ScrapeStatus.SEARCHING || !query.trim()}
-                      className="px-6 py-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 whitespace-nowrap"
+                      className="px-6 py-4 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 font-semibold rounded-lg transition-all flex items-center justify-center gap-2"
                     >
                         <UserSearch className="w-5 h-5" />
-                        Find People
+                        Manual Find
                     </button>
-                  )}
-
-                  {/* Auto Scrape Button */}
-                  {isAutoScraping ? (
+                  ) : (
                     <button
                       type="button"
                       onClick={stopAutoScrape}
@@ -423,118 +358,124 @@ const App: React.FC = () => {
                       <Square className="w-5 h-5 fill-current" />
                       Stop Miner
                     </button>
-                  ) : (
-                    <div className="flex flex-col gap-1">
-                      <button
+                  )}
+
+                  {!isAutoScraping && (
+                    <button
                         type="button"
                         onClick={startAutoScrape}
                         disabled={status === ScrapeStatus.SEARCHING}
-                        className="px-8 py-4 bg-primary-600 hover:bg-primary-500 text-white font-semibold rounded-lg shadow-lg shadow-primary-900/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[180px]"
-                      >
+                        className="px-8 py-4 bg-primary-600 hover:bg-primary-500 text-white font-semibold rounded-lg shadow-lg shadow-primary-900/50 transition-all flex items-center justify-center gap-2 min-w-[180px]"
+                    >
                          <Zap className="w-5 h-5 fill-current" />
                          Start Auto-Mine
-                      </button>
-                      <div className="text-[10px] text-center text-gray-500 font-mono">
-                        *Auto-Saves to Disk
-                      </div>
-                    </div>
+                    </button>
                   )}
                 </div>
                 
-                {/* Advanced Controls Row */}
-                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between text-xs text-gray-400 gap-4 pt-2">
-                  
-                  {/* Provider Checkboxes */}
-                  <div className="flex items-center gap-4 flex-wrap">
-                    <div className="flex items-center gap-2 text-primary-400 font-semibold">
+                {/* ADVANCED PROVIDER FILTERS */}
+                <div className="pt-2">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-primary-400 font-bold text-xs uppercase tracking-widest">
                       <Filter className="w-3.5 h-3.5" />
-                      FILTERS:
+                      Individual Collection Options
                     </div>
-                    
-                    {[
-                      { key: 'gmail', label: 'Gmail' },
-                      { key: 'yahoo', label: 'Yahoo' },
-                      { key: 'aol', label: 'AOL' },
-                      { key: 'hotmail', label: 'Hotmail/Outlook' },
-                      { key: 'icloud', label: 'iCloud' },
-                      { key: 'net', label: '.net ISPs' },
-                    ].map((provider) => (
-                      <label key={provider.key} className="flex items-center gap-1.5 cursor-pointer group select-none">
-                        <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center
-                          ${providerFilters[provider.key as keyof typeof providerFilters] 
-                            ? 'bg-primary-600 border-primary-600' 
-                            : 'bg-gray-800 border-gray-600 group-hover:border-gray-500'}`}
-                        >
-                          {providerFilters[provider.key as keyof typeof providerFilters] && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}
-                        </div>
-                        <input 
-                          type="checkbox" 
-                          className="hidden" 
-                          checked={providerFilters[provider.key as keyof typeof providerFilters]}
-                          onChange={() => toggleFilter(provider.key as keyof typeof providerFilters)}
-                          disabled={isAutoScraping}
-                        />
-                        <span className={`${providerFilters[provider.key as keyof typeof providerFilters] ? 'text-gray-200' : 'text-gray-500'} transition-colors`}>
-                          {provider.label}
-                        </span>
-                      </label>
-                    ))}
+                    <button 
+                      type="button"
+                      onClick={() => setShowAllFilters(!showAllFilters)}
+                      className="text-xs text-gray-500 hover:text-white flex items-center gap-1 transition-colors"
+                    >
+                      {showAllFilters ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      {showAllFilters ? 'Hide Extended ISPs' : `Show Extended ISPs (${ispProviders.length})`}
+                    </button>
                   </div>
 
-                  {/* Settings */}
-                  <div className="flex items-center gap-4 border-l border-gray-700 pl-4">
-                    {/* 100 THREADS CHECKBOX */}
-                    <label className="flex items-center gap-2 cursor-pointer select-none group w-fit">
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all duration-200 ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}
+                  <div className="space-y-4 bg-gray-950/50 p-4 rounded-lg border border-gray-800/50">
+                    {/* Major Providers */}
+                    <div className="flex items-center gap-6 flex-wrap">
+                      <div className="flex items-center gap-2 mr-2">
+                        <button 
+                            type="button"
+                            onClick={() => toggleGroup(majorProviders, true)}
+                            className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
+                        >ALL</button>
+                        <button 
+                            type="button"
+                            onClick={() => toggleGroup(majorProviders, false)}
+                            className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
+                        >NONE</button>
+                      </div>
+                      {majorProviders.map((p) => (
+                        <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
+                      ))}
+                    </div>
+
+                    {/* Extended ISPs */}
+                    {showAllFilters && (
+                      <div className="pt-3 border-t border-gray-800/50">
+                        <div className="flex items-center gap-2 mb-3">
+                            <span className="text-[10px] text-gray-500 font-bold mr-2 uppercase">ISP Group:</span>
+                            <button 
+                                type="button"
+                                onClick={() => toggleGroup(ispProviders, true)}
+                                className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
+                            >ENABLE ALL ISPs</button>
+                            <button 
+                                type="button"
+                                onClick={() => toggleGroup(ispProviders, false)}
+                                className="text-[10px] bg-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-700 transition-colors"
+                            >DISABLE ALL ISPs</button>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
+                          {ispProviders.map((p) => (
+                            <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* SUPER SPEED TOGGLE */}
+                <div className="flex items-center gap-6 pt-2 border-t border-gray-800/30">
+                    <label className="flex items-center gap-2 cursor-pointer select-none group">
+                        <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}
                         >
                             {useSuperThreads && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
                         </div>
-                        <input 
-                            type="checkbox" 
-                            className="hidden" 
-                            checked={useSuperThreads} 
-                            onChange={e => setUseSuperThreads(e.target.checked)} 
-                            disabled={isAutoScraping}
-                        />
-                        <span className={`font-bold transition-colors ${useSuperThreads ? 'text-red-400 animate-pulse' : 'text-gray-500 group-hover:text-gray-400'}`}>
-                            100x SUPER SPEED
+                        <input type="checkbox" className="hidden" checked={useSuperThreads} onChange={e => setUseSuperThreads(e.target.checked)} disabled={isAutoScraping} />
+                        <span className={`text-xs font-bold transition-colors ${useSuperThreads ? 'text-red-400 animate-pulse' : 'text-gray-500 group-hover:text-gray-400'}`}>
+                            100X SUPER THREADING (HIGH CPU)
                         </span>
                     </label>
-                  </div>
                 </div>
               </form>
             </div>
           </div>
         </section>
 
-        {/* Error Message */}
         {error && (
           <div className="mb-8 p-4 bg-red-900/20 border border-red-900/50 rounded-lg text-red-200 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-red-500 mt-0.5" />
             <div>
-              <h3 className="font-semibold text-red-400">Scan Failed</h3>
+              <h3 className="font-semibold text-red-400">Error Encountered</h3>
               <p className="text-sm opacity-80 mt-1">{error}</p>
             </div>
           </div>
         )}
 
-        {/* Results Area */}
         <section className="space-y-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                <span className="text-primary-500">///</span> 
-                Live Feed
-                {totalCollected > 0 && (
-                    <span className="ml-2 text-sm font-normal text-white bg-green-600 px-3 py-0.5 rounded-full shadow shadow-green-900/50">
-                    Total Collected: {totalCollected.toLocaleString()}
-                    </span>
-                )}
+                  <span className="text-primary-500">///</span> 
+                  Mining Results
                 </h2>
-                {totalCollected > MAX_UI_ROWS && (
-                    <span className="text-xs text-gray-500 italic">
-                        (Displaying last {MAX_UI_ROWS} items to save memory)
-                    </span>
+                {totalCollected > 0 && (
+                    <div className="flex items-center gap-2 bg-gray-900 border border-gray-800 rounded-full pl-1 pr-3 py-1 shadow-inner">
+                      <div className="bg-green-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow-lg shadow-green-900/40">COLLECTED</div>
+                      <span className="text-sm font-mono text-green-400">{totalCollected.toLocaleString()}</span>
+                    </div>
                 )}
             </div>
             
@@ -543,18 +484,17 @@ const App: React.FC = () => {
                 <>
                     <button
                         onClick={clearData}
-                        className="flex items-center gap-2 px-3 py-2 bg-red-900/20 hover:bg-red-900/40 border border-red-900/50 text-red-400 rounded-lg transition-colors text-sm"
-                        title="Clear Memory & UI"
+                        className="flex items-center gap-2 px-3 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-400 rounded-lg transition-colors text-xs"
                     >
-                        <Trash2 className="w-4 h-4" />
-                        Clear
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Reset Memory
                     </button>
                     <button
                         onClick={exportCSV}
-                        className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 rounded-lg transition-colors text-sm font-medium"
+                        className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white rounded-lg shadow-lg shadow-primary-900/50 transition-colors text-sm font-bold"
                     >
-                        <HardDrive className="w-4 h-4" />
-                        Save Full Export
+                        <Download className="w-4 h-4" />
+                        Full Export
                     </button>
                 </>
                 )}
@@ -563,30 +503,23 @@ const App: React.FC = () => {
 
           <LeadTable emails={data?.emails || []} />
           
-          {/* Prompt Transparency / Status */}
           {status === ScrapeStatus.SEARCHING && (
-            <div className="mt-8 p-4 font-mono text-xs text-green-500 bg-black rounded border border-gray-800 opacity-70">
-              {isAutoScraping ? (
-                 <>
-                   &gt; THREAD_POOL: {BATCH_SIZE} active workers<br/>
-                   &gt; FILTERS: {getActiveDomains().length} provider groups active<br/>
-                   &gt; BATCH_TARGETS: {autoQueryDisplay}<br/>
-                   {isRecordingToDisk ? (
-                      <span className="text-red-400 font-bold">&gt; FILE_STREAM: CRASH-PROOF MODE (Appending to disk every batch)<br/></span>
-                   ) : (
-                      <span className="text-yellow-400">&gt; FILE_STREAM: DISK OFF (Ram Mode) - Will auto-download on stop<br/></span>
-                   )}
-                   &gt; MEMORY: Rolling buffer active (100 rows). Old data flushed from DOM.<br/>
-                   &gt; STATUS: High-Speed Mining...
-                 </>
-              ) : (
-                <>
-                  &gt; Accessing ZabaSearch Index...<br/>
-                  &gt; Querying Public Records Database...<br/>
-                  &gt; Filtering for contact information...<br/>
-                  &gt; Cross-referencing data points...<br/>
-                </>
-              )}
+            <div className="mt-8 p-4 font-mono text-[10px] text-green-500 bg-black/50 rounded border border-gray-800/50 backdrop-blur-sm">
+              <div className="flex justify-between border-b border-gray-800 pb-1 mb-2">
+                <span>SYSTEM_LOG</span>
+                <span className="animate-pulse">RUNNING...</span>
+              </div>
+              <div className="space-y-0.5 opacity-80">
+                &gt; THREAD_POOL: {BATCH_SIZE} Active<br/>
+                &gt; ACTIVE_FILTERS: {getActiveDomains().length} Domains<br/>
+                {isRecordingToDisk ? (
+                  <span className="text-red-400 font-bold">&gt; STORAGE: ATOMIC DISK WRITE (RAM SAFE MODE)<br/></span>
+                ) : (
+                  <span className="text-yellow-400 font-bold">&gt; STORAGE: RAM CACHE MODE (Auto-Download on Stop)<br/></span>
+                )}
+                &gt; UI_BUFFER: Last {MAX_UI_ROWS} rows visible<br/>
+                &gt; BATCH_FEED: {autoQueryDisplay.substring(0, 100)}...<br/>
+              </div>
             </div>
           )}
         </section>
@@ -595,5 +528,20 @@ const App: React.FC = () => {
     </div>
   );
 };
+
+// Subcomponent for Filter items to clean up App.tsx
+const FilterItem: React.FC<{ label: string, checked: boolean, onChange: () => void, disabled?: boolean }> = ({ label, checked, onChange, disabled }) => (
+  <label className={`flex items-center gap-2 cursor-pointer group select-none ${disabled ? 'opacity-50' : ''}`}>
+    <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center
+      ${checked ? 'bg-primary-600 border-primary-600' : 'bg-gray-950 border-gray-700 group-hover:border-gray-500'}`}
+    >
+      {checked && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}
+    </div>
+    <input type="checkbox" className="hidden" checked={checked} onChange={onChange} disabled={disabled} />
+    <span className={`text-[11px] transition-colors ${checked ? 'text-gray-200' : 'text-gray-500'}`}>
+      {label}
+    </span>
+  </label>
+);
 
 export default App;
