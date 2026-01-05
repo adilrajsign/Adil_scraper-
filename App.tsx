@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { 
   Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, 
@@ -35,16 +36,33 @@ const App: React.FC = () => {
   const MAX_UI_ROWS = 100;
 
   const [useSuperThreads, setUseSuperThreads] = useState(false);
-  const [showAllFilters, setShowAllFilters] = useState(false);
   const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
   const [providerFilters, setProviderFilters] = useState<Record<string, boolean>>({
-    'gmail.com': true, 'yahoo.com': true, 'aol.com': true, 'hotmail.com': true, 
-    'icloud.com': true, 'att.net': true, 'comcast.net': true, 'verizon.net': true, 
-    'cox.net': true, 'sbcglobal.net': true, 'bellsouth.net': true, 'charter.net': true, 
-    'spectrum.net': true, 'optimum.net': true, 'earthlink.net': true, 'frontiernet.net': true, 
-    'centurylink.net': true, 'windstream.net': true, 'suddenlink.net': true, 
-    'mediacomcc.net': true, 'pacbell.net': true,
+    'gmail.com': true, 
+    'yahoo.com': true, 
+    'hotmail.com': true, 
+    'outlook.com': true,
+    'live.com': true,
+    'msn.com': true,
+    'aol.com': true, 
+    'icloud.com': true, 
+    'att.net': true, 
+    'comcast.net': true, 
+    'verizon.net': true, 
+    'cox.net': true, 
+    'sbcglobal.net': true, 
+    'bellsouth.net': true, 
+    'charter.net': true, 
+    'spectrum.net': true, 
+    'optimum.net': true, 
+    'earthlink.net': true, 
+    'frontiernet.net': true, 
+    'centurylink.net': true, 
+    'windstream.net': true, 
+    'suddenlink.net': true, 
+    'mediacomcc.net': true, 
+    'pacbell.net': true,
   });
 
   useEffect(() => {
@@ -60,7 +78,7 @@ const App: React.FC = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  const majorProviders = ['gmail.com', 'yahoo.com', 'aol.com', 'hotmail.com', 'icloud.com'];
+  const majorProviders = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'aol.com', 'icloud.com'];
   const ispProviders = Object.keys(providerFilters).filter(p => !majorProviders.includes(p));
 
   const getActiveDomains = () => {
@@ -68,7 +86,6 @@ const App: React.FC = () => {
       .filter(([_, active]) => active)
       .map(([domain]) => {
         if (domain === 'yahoo.com') return ['yahoo.com', 'ymail.com'];
-        if (domain === 'hotmail.com') return ['hotmail.com', 'live.com', 'msn.com', 'outlook.com'];
         if (domain === 'icloud.com') return ['icloud.com', 'me.com', 'mac.com'];
         return [domain];
       })
@@ -77,12 +94,6 @@ const App: React.FC = () => {
 
   const toggleFilter = (domain: string) => {
     setProviderFilters(prev => ({ ...prev, [domain]: !prev[domain] }));
-  };
-
-  const toggleGroup = (group: string[], targetValue: boolean) => {
-    const next = { ...providerFilters };
-    group.forEach(p => next[p] = targetValue);
-    setProviderFilters(next);
   };
 
   const clearData = () => {
@@ -376,31 +387,28 @@ const App: React.FC = () => {
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2 text-primary-400 font-bold text-xs uppercase tracking-widest">
                       <Filter className="w-3.5 h-3.5" />
-                      Collection Options
+                      Collection Domains
                     </div>
-                    <button 
-                      type="button"
-                      onClick={() => setShowAllFilters(!showAllFilters)}
-                      className="text-xs text-gray-500 hover:text-white flex items-center gap-1 transition-colors"
-                    >
-                      {showAllFilters ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                      {showAllFilters ? 'Hide ISPs' : `Show Extended ISPs (${ispProviders.length})`}
-                    </button>
+                    <div className="text-[10px] font-mono text-gray-500 uppercase tracking-tighter">
+                      Total Targets: {Object.keys(providerFilters).length}
+                    </div>
                   </div>
 
                   <div className="space-y-4 bg-gray-950/50 p-4 rounded-lg border border-gray-800/50">
-                    <div className="flex items-center gap-6 flex-wrap">
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
                       {majorProviders.map((p) => (
                         <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
                       ))}
                     </div>
-                    {showAllFilters && (
-                      <div className="pt-3 border-t border-gray-800/50 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
+                    
+                    <div className="pt-3 border-t border-gray-800/50">
+                      <div className="text-[9px] font-bold text-gray-600 uppercase mb-3 tracking-widest">Extended ISPs ({ispProviders.length})</div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-2">
                         {ispProviders.map((p) => (
                           <FilterItem key={p} label={p} checked={providerFilters[p]} onChange={() => toggleFilter(p)} disabled={isAutoScraping} />
                         ))}
                       </div>
-                    )}
+                    </div>
                   </div>
                 </div>
 
