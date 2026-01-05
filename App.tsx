@@ -1,8 +1,10 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Download, RefreshCw, AlertCircle, ShieldCheck, UserSearch, Play, Square, Zap, Gauge, Clock, AlertTriangle, Check, Filter, HardDrive, Trash2, Cpu, ChevronDown, ChevronUp, CheckSquare, Square as SquareIcon } from 'lucide-react';
 import { SearchResult, ScrapeStatus, ScrapedEmail } from './types';
 import { searchEmailsWithGemini } from './services/geminiService';
 import { generateRandomUSAIdentity } from './services/nameGenerator';
+import { isValidEmail } from './services/validation';
 import LeadTable from './components/LeadTable';
 import SourcesPanel from './components/SourcesPanel';
 
@@ -13,24 +15,19 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [totalCollected, setTotalCollected] = useState(0);
   
-  // Auto-Scrape States
   const [isAutoScraping, setIsAutoScraping] = useState(false);
   const [autoQueryDisplay, setAutoQueryDisplay] = useState('');
   const [isRecordingToDisk, setIsRecordingToDisk] = useState(false);
   const stopSignal = useRef(false);
 
-  // Memory Management Refs
   const seenEmailsRef = useRef<Set<string>>(new Set());
-  // IMPORTANT: We only fill allEmailsRef if NOT saving to disk to prevent RAM bloat
   const allEmailsRef = useRef<ScrapedEmail[]>([]); 
-  const MAX_UI_ROWS = 100; // Only keep the last 100 rows in DOM to prevent browser crash
+  const MAX_UI_ROWS = 100;
 
-  // Configuration
   const [useSuperThreads, setUseSuperThreads] = useState(false);
   const [showAllFilters, setShowAllFilters] = useState(false);
   const BATCH_SIZE = useSuperThreads ? 100 : 50; 
 
-  // Detailed Provider Filters
   const [providerFilters, setProviderFilters] = useState<Record<string, boolean>>({
     'gmail.com': true,
     'yahoo.com': true,
@@ -62,7 +59,6 @@ const App: React.FC = () => {
     return Object.entries(providerFilters)
       .filter(([_, active]) => active)
       .map(([domain]) => {
-        // Handle aliases
         if (domain === 'yahoo.com') return ['yahoo.com', 'ymail.com'];
         if (domain === 'hotmail.com') return ['hotmail.com', 'live.com', 'msn.com', 'outlook.com'];
         if (domain === 'icloud.com') return ['icloud.com', 'me.com', 'mac.com'];
@@ -87,10 +83,6 @@ const App: React.FC = () => {
     seenEmailsRef.current.clear();
     allEmailsRef.current = [];
     setStatus(ScrapeStatus.IDLE);
-    // Explicitly suggest browser memory cleanup to the user if they were in RAM mode
-    if (!isRecordingToDisk && totalCollected > 50000) {
-      console.log("Memory cleared. For hard reset, refresh the page.");
-    }
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -108,12 +100,17 @@ const App: React.FC = () => {
 
     try {
       const result = await searchEmailsWithGemini(query, activeDomains);
-      result.emails.forEach(e => {
+      
+      // Client-side validation pass
+      const validatedEmails = result.emails.filter(e => isValidEmail(e.email));
+      
+      validatedEmails.forEach(e => {
           seenEmailsRef.current.add(e.email.toLowerCase());
           allEmailsRef.current.push(e);
       });
-      setData(result);
-      setTotalCollected(result.emails.length);
+      
+      setData({ ...result, emails: validatedEmails });
+      setTotalCollected(validatedEmails.length);
       setStatus(ScrapeStatus.COMPLETED);
     } catch (err: any) {
       console.error(err);
@@ -140,7 +137,6 @@ const App: React.FC = () => {
             
             setIsRecordingToDisk(true);
             usingDisk = true;
-            // CRITICAL: When using disk, we clear allEmailsRef to keep browser fast and prevent "not responding"
             allEmailsRef.current = []; 
         } catch (err) {
             if ((err as Error).name !== 'AbortError') {
@@ -177,19 +173,20 @@ const App: React.FC = () => {
         validResults.forEach(res => {
             res.emails.forEach(emailObj => {
                 const normalized = emailObj.email.toLowerCase().trim();
-                if (!seenEmailsRef.current.has(normalized)) {
+                
+                // FINAL CLIENT-SIDE VALIDATION CHECK
+                if (!seenEmailsRef.current.has(normalized) && isValidEmail(normalized)) {
                     seenEmailsRef.current.add(normalized);
-                    uniqueNewEmails.push(emailObj);
+                    const finalObj = { ...emailObj, isValidated: true };
+                    uniqueNewEmails.push(finalObj);
                     
-                    // ONLY store in RAM if we are NOT recording to disk
                     if (!usingDisk) {
-                      allEmailsRef.current.push(emailObj);
+                      allEmailsRef.current.push(finalObj);
                     }
                 }
             });
         });
 
-        // 3a. Atomic Write to Disk
         if (usingDisk && fileHandle && uniqueNewEmails.length > 0) {
               const csvChunk = uniqueNewEmails.map(item => 
                 `"${item.email}","${item.context}","${item.source}"`
@@ -209,7 +206,6 @@ const App: React.FC = () => {
               }
         }
 
-        // 3b. UI Update (Rolling Buffer)
         if (uniqueNewEmails.length > 0) {
             setTotalCollected(prev => prev + uniqueNewEmails.length);
             setData((prev) => {
@@ -290,7 +286,7 @@ const App: React.FC = () => {
               <UserSearch className="w-5 h-5" />
             </div>
             <h1 className="text-xl font-bold tracking-tight text-white">
-              ZabaSearch <span className="text-primary-500">PRO</span>
+              Raj Scrapper <span className="text-primary-500">PRO</span>
             </h1>
           </div>
           <div className="flex items-center gap-4 text-xs text-gray-500 font-mono">
@@ -373,7 +369,6 @@ const App: React.FC = () => {
                   )}
                 </div>
                 
-                {/* ADVANCED PROVIDER FILTERS */}
                 <div className="pt-2">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2 text-primary-400 font-bold text-xs uppercase tracking-widest">
@@ -391,7 +386,6 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="space-y-4 bg-gray-950/50 p-4 rounded-lg border border-gray-800/50">
-                    {/* Major Providers */}
                     <div className="flex items-center gap-6 flex-wrap">
                       <div className="flex items-center gap-2 mr-2">
                         <button 
@@ -410,7 +404,6 @@ const App: React.FC = () => {
                       ))}
                     </div>
 
-                    {/* Extended ISPs */}
                     {showAllFilters && (
                       <div className="pt-3 border-t border-gray-800/50">
                         <div className="flex items-center gap-2 mb-3">
@@ -436,7 +429,6 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* SUPER SPEED TOGGLE */}
                 <div className="flex items-center gap-6 pt-2 border-t border-gray-800/30">
                     <label className="flex items-center gap-2 cursor-pointer select-none group">
                         <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${useSuperThreads ? 'bg-red-600 border-red-600' : 'bg-gray-800 border-gray-700 group-hover:border-gray-500'}`}
@@ -519,6 +511,7 @@ const App: React.FC = () => {
                 )}
                 &gt; UI_BUFFER: Last {MAX_UI_ROWS} rows visible<br/>
                 &gt; BATCH_FEED: {autoQueryDisplay.substring(0, 100)}...<br/>
+                &gt; VALIDATION: ACTIVE (RFC 5322)<br/>
               </div>
             </div>
           )}
@@ -529,7 +522,6 @@ const App: React.FC = () => {
   );
 };
 
-// Subcomponent for Filter items to clean up App.tsx
 const FilterItem: React.FC<{ label: string, checked: boolean, onChange: () => void, disabled?: boolean }> = ({ label, checked, onChange, disabled }) => (
   <label className={`flex items-center gap-2 cursor-pointer group select-none ${disabled ? 'opacity-50' : ''}`}>
     <div className={`w-3.5 h-3.5 rounded border transition-colors flex items-center justify-center

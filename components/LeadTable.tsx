@@ -1,6 +1,7 @@
+
 import React from 'react';
 import { ScrapedEmail } from '../types';
-import { ExternalLink, Mail, User, Globe, Copy, Check } from 'lucide-react';
+import { ExternalLink, Mail, User, Globe, Copy, Check, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 
 interface LeadTableProps {
@@ -42,10 +43,22 @@ const LeadTable: React.FC<LeadTableProps> = ({ emails }) => {
             <tr key={item.id} className="hover:bg-gray-800/50 transition-colors duration-150 group">
               <td className="p-4">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded bg-primary-600/10 text-primary-500">
-                    <Mail className="w-4 h-4" />
+                  <div className="relative">
+                    <div className="p-2 rounded bg-primary-600/10 text-primary-500">
+                      <Mail className="w-4 h-4" />
+                    </div>
+                    {item.isValidated && (
+                      <div className="absolute -top-1 -right-1 bg-green-500 rounded-full p-0.5 border border-gray-900 shadow-sm" title="Format Verified">
+                        <ShieldCheck className="w-2 h-2 text-white" />
+                      </div>
+                    )}
                   </div>
-                  <span className="font-mono text-white select-all">{item.email}</span>
+                  <div className="flex flex-col">
+                    <span className="font-mono text-white select-all">{item.email}</span>
+                    {item.isValidated && (
+                      <span className="text-[10px] text-green-500/70 font-bold uppercase tracking-tighter">Format Verified</span>
+                    )}
+                  </div>
                 </div>
               </td>
               <td className="p-4">

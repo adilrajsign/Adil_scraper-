@@ -1,8 +1,10 @@
+
 export interface ScrapedEmail {
   id: string;
   email: string;
   context: string; // Name, Role, or Company associated with the email
   source: string; // Website or domain
+  isValidated?: boolean; // Tracking if it passed validation
 }
 
 export interface GroundingSource {

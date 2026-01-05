@@ -1,5 +1,5 @@
 {
-  "name": "ZabaSearch Email OSINT",
-  "description": "A people-finder tool utilizing ZabaSearch and Google Search Grounding to extract personal email addresses and contact points.",
+  "name": "Raj Scrapper Pro",
+  "description": "A high-performance people-finder tool utilizing public records and pattern matching to extract verified contact points.",
   "requestFramePermissions": []
 }
